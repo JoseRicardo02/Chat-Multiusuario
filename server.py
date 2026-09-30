@@ -21,6 +21,7 @@ import socket
 import threading
 import queue
 import time
+import sys
 from datetime import datetime
 
 # Endereço e porta do servidor para aceitar conexões dos clientes.
@@ -161,6 +162,22 @@ def thread2_processa(handle, info):
 
 
 def main():
+    if len(sys.argv) != 2:
+        print("Uso: python server.py <numero_maximo_clientes>")
+        sys.exit(1)
+
+    try:
+        MAX_CLIENTES = int(sys.argv[1])
+
+        if MAX_CLIENTES <= 0:
+            print("O numero maximo de clientes deve ser maior que 0.")
+            sys.exit(1)
+
+    except ValueError:
+        print("O numero maximo de clientes deve ser um numero inteiro.")
+        sys.exit(1)
+
+    print(f"Limite maximo de clientes: {MAX_CLIENTES}")
     # Cria o socket TCP do servidor para receber conexões.
     servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # Permite reutilizar a porta mesmo que a conexão anterior tenha sido fechada.
