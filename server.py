@@ -16,7 +16,6 @@ Para rodar:
             ":nome <novo_nome>" -> muda o nome do usuário
             ":quit"             -> sai do aplicativo 
 """
-
 import socket
 import threading
 import queue
@@ -27,6 +26,9 @@ from datetime import datetime
 # Endereço e porta do servidor para aceitar conexões dos clientes.
 HOST = "0.0.0.0"
 PORT = 5000
+
+# Variável global (Necessária para a sua parte enxergar o limite do Integrante 1)
+MAX_CLIENTES = 0 
 
 # Lock para proteger o dicionário de clientes no acesso concorrente.
 clients_lock = threading.Lock()
@@ -133,6 +135,8 @@ def thread2_processa(handle, info):
     - Varre periodicamente a fila de comandos e executa a ação solicitada.
     - Envia data/hora ao cliente a cada 60 segundos, independente de atividade.
     """
+    global MAX_CLIENTES # Necessário para a sua parte ler o limite global
+    
     while info.ativo:
         # Processa todos os comandos pendentes na fila compartilhada.
         try:
@@ -151,22 +155,32 @@ def thread2_processa(handle, info):
 
         time.sleep(0.2)
 
-    # Limpeza ao desconectar o cliente: remove da lista e fecha a conexão.
+    
+    # LIBERAÇÃO DE VAGA 
+    
     with clients_lock:
-        clients.pop(handle, None)
+        clients.pop(handle, None) # Remove o usuário e libera a vaga
+        clientes_ativos = len(clients) # Faz a recontagem
+        
     try:
         info.conn.close()
     except OSError:
         pass
+        
     print(f"Cliente '{info.nome}' desconectado.")
+    print(f"[VAGA LIBERADA] Ocupação atual do servidor: {clientes_ativos}/{MAX_CLIENTES} cliente(s).")
+   
 
 
 def main():
+    global MAX_CLIENTES # Declara para alterar a variável global
+    
     if len(sys.argv) != 2:
         print("Uso: python server.py <numero_maximo_clientes>")
         sys.exit(1)
 
     try:
+        # --- PARTE DO INTEGRANTE 1 ---
         MAX_CLIENTES = int(sys.argv[1])
 
         if MAX_CLIENTES <= 0:
@@ -178,6 +192,7 @@ def main():
         sys.exit(1)
 
     print(f"Limite maximo de clientes: {MAX_CLIENTES}")
+    
     # Cria o socket TCP do servidor para receber conexões.
     servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # Permite reutilizar a porta mesmo que a conexão anterior tenha sido fechada.
@@ -210,6 +225,7 @@ def main():
             t2 = threading.Thread(target=thread2_processa, args=(handle, info), daemon=True)
             t1.start()
             t2.start()
+            
     # Encerra o servidor com Ctrl+C.
     except KeyboardInterrupt:
         print("\nEncerrando servidor...")
