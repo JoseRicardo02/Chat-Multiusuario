@@ -180,7 +180,7 @@ def main():
         sys.exit(1)
 
     try:
-        # --- PARTE DO INTEGRANTE 1 ---
+        
         MAX_CLIENTES = int(sys.argv[1])
 
         if MAX_CLIENTES <= 0:
