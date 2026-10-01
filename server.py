@@ -1,7 +1,7 @@
 """
 Fluxo (conforme diagrama):
     Cria socket, faz bind, listen e accept.
-    Ao aceitar uma conexão, envia imediatamente a MSG1: ": CONECTADO!!"
+    A thread de trabalho verifica a vaga antes de enviar a MSG1: ": CONECTADO!!"
     Cria duas threads por cliente:
     Thread 1: fica lendo do socket os comandos/mensagens vindos do cliente
         e apenas os armazena numa fila (memória compartilhada).
@@ -54,7 +54,7 @@ def enviar_linha(conn, texto):
 
 
 def broadcast(texto, exceto_handle=None):
-    """Envia uma mensagem a todos os usuários conectados, exceto quem enviou (opcional)."""
+    # Envia uma mensagem a todos os usuários conectados, exceto quem enviou (opcional).
     # Copia a lista de clientes para evitar alteração durante a iteração.
     with clients_lock:
         destinatarios = list(clients.items())
@@ -66,7 +66,7 @@ def broadcast(texto, exceto_handle=None):
 
 
 def thread1_recebe(handle, info):
-    """Thread 1 (servidor): lê do socket e apenas empilha os comandos na fila compartilhada."""
+    # Thread 1 (servidor): lê do socket e apenas empilha os comandos na fila compartilhada.
     # Buffer para agrupar mensagens recebidas que podem chegar em pedaços.
     buffer = ""
     try:
@@ -135,7 +135,7 @@ def thread2_processa(handle, info):
     - Varre periodicamente a fila de comandos e executa a ação solicitada.
     - Envia data/hora ao cliente a cada 60 segundos, independente de atividade.
     """
-    global MAX_CLIENTES # Necessário para a sua parte ler o limite global
+    global MAX_CLIENTES # Necessário paraler o limite global
     
     while info.ativo:
         # Processa todos os comandos pendentes na fila compartilhada.
@@ -154,9 +154,6 @@ def thread2_processa(handle, info):
             info.ultimo_envio_hora = agora
 
         time.sleep(0.2)
-
-    
-    # LIBERAÇÃO DE VAGA 
     
     with clients_lock:
         clients.pop(handle, None) # Remove o usuário e libera a vaga
@@ -170,6 +167,31 @@ def thread2_processa(handle, info):
     print(f"Cliente '{info.nome}' desconectado.")
     print(f"[VAGA LIBERADA] Ocupação atual do servidor: {clientes_ativos}/{MAX_CLIENTES} cliente(s).")
    
+
+
+def atender_cliente(handle, conn, addr):
+    # Verifica a vaga e executa o atendimento dentro da thread de trabalho.
+    with clients_lock:
+        servidor_cheio = len(clients) >= MAX_CLIENTES
+        if not servidor_cheio:
+            info = ClienteInfo(conn, addr)
+            clients[handle] = info
+
+    if servidor_cheio:
+        try:
+            enviar_linha(conn, "[SERVIDOR] Servidor cheio. Nao ha vagas disponiveis. Tente novamente mais tarde.")
+        finally:
+            conn.close()
+        print(f"[SEM VAGA] Conexao recusada: {addr[0]}:{addr[1]}")
+        return
+
+    enviar_linha(conn, ": CONECTADO!!")
+    print(f"Novo cliente conectado: {info.nome} (handle={handle})")
+
+    # Mantem duas threads: uma recebe e esta processa os comandos.
+    t1 = threading.Thread(target=thread1_recebe, args=(handle, info), daemon=True)
+    t1.start()
+    thread2_processa(handle, info)
 
 
 def main():
@@ -208,24 +230,16 @@ def main():
         while True:
             # Aceita uma nova conexão de cliente.
             conn, addr = servidor.accept()
+
             handle_contador += 1
             handle = handle_contador
 
-            # Armazena as informações do cliente em um registro do servidor.
-            info = ClienteInfo(conn, addr)
-            with clients_lock:
-                clients[handle] = info
+            # A thread de trabalho decide se existe vaga; a principal volta ao accept.
+            trabalho = threading.Thread(
+                target=atender_cliente, args=(handle, conn, addr), daemon=True
+            )
+            trabalho.start()
 
-            # Envia imediatamente a MSG1 de confirmação de conexão.
-            enviar_linha(conn, ": CONECTADO!!")
-            print(f"Novo cliente conectado: {info.nome} (handle={handle})")
-
-            # Cria as duas threads do cliente: recebimento e processamento.
-            t1 = threading.Thread(target=thread1_recebe, args=(handle, info), daemon=True)
-            t2 = threading.Thread(target=thread2_processa, args=(handle, info), daemon=True)
-            t1.start()
-            t2.start()
-            
     # Encerra o servidor com Ctrl+C.
     except KeyboardInterrupt:
         print("\nEncerrando servidor...")
