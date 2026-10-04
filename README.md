@@ -117,3 +117,46 @@ terminaram?}
 
 - [ ] Suporte a múltiplos usuários simultâneos
 - [ ] Broadcast de mensagens entre todos os clientes conectados
+
+## Controle de exceções nos clientes
+
+Os dois clientes compartilham o tratamento implementado em `cliente.py`:
+
+- Falhas ao criar o socket ou conectar exibem uma mensagem amigável e liberam o socket.
+- Falhas de envio e recebimento encerram a conexão sem traceback.
+- Um recebimento vazio identifica que o servidor encerrou a conexão.
+- O encerramento usa um evento compartilhado, fecha o socket uma única vez e aguarda a thread de recebimento terminar.
+- `:quit`, Ctrl+C e fim da entrada (EOF) também liberam os recursos.
+- A tentativa de conexão tem limite de 5 segundos; envios bloqueados têm limite de 1 segundo. Um timeout de recebimento apenas volta a verificar o estado da conexão.
+
+Se a conexão cair enquanto `input()` aguarda digitação, aparece o aviso para
+pressionar ENTER. A conexão já estará fechada; o texto digitado nessa situação
+não será enviado. O processo termina ao retornar da leitura do teclado.
+
+### Testes automatizados
+
+Na pasta do projeto, execute (sem dependências adicionais):
+
+```console
+python -B -W error::ResourceWarning -m unittest -v
+```
+
+A suíte cobre conexão recusada, timeout, falha na criação do socket, perda no
+`sendall` e no `recv`, tentativa após desconexão, fechamento repetido, encerramento
+da thread, `:quit`, EOF e Ctrl+C. Inclui sockets reais e execução do segundo
+cliente em processo separado, verificando ausência de erros na saída de diagnóstico.
+
+### Roteiro manual da atividade
+
+1. **Cliente sem servidor:** com o servidor desligado, execute `python cliente.py`.
+   Deve aparecer “Não foi possível conectar ao servidor.”, sem traceback.
+2. **Desligar o servidor:** execute `python server.py 2` e, em outro terminal,
+   `python cliente.py`. Encerre o servidor com Ctrl+C. O cliente deve avisar sobre
+   o encerramento ou interrupção da conexão; pressione ENTER para finalizar.
+3. **Servidor desconectar o cliente:** execute `python server.py 1`, conecte um
+   cliente e abra `python cliente2.py`. O segundo recebe o aviso de servidor cheio
+   e de conexão encerrada. Pressione ENTER se solicitado.
+4. **Enviar após a perda:** repita o cenário 2, mas digite uma mensagem após o
+   aviso e pressione ENTER. O cliente deve finalizar sem tentar enviar o texto.
+5. **Saída voluntária:** com uma conexão ativa, teste `:quit` e Ctrl+C em sessões
+   separadas. O cliente deve encerrar sem traceback e sem thread remanescente.
