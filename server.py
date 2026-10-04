@@ -43,6 +43,7 @@ class ClienteInfo:
         self.fila_comandos = queue.Queue()  # "memória compartilhada" entre thread1 e thread2
         self.ativo = True
         self.ultimo_envio_hora = time.time()
+        self.limpeza_iniciada = False       
 
 
 def enviar_linha(conn, texto):
@@ -183,42 +184,62 @@ def limpar_cliente(handle, info):
 
 def thread2_processa(handle, info):
     """
-    Thread 2 (servidor):
-    - Varre periodicamente a fila de comandos e executa a ação solicitada.
-    - Envia data/hora ao cliente a cada 60 segundos, independente de atividade.
+    Thread 2:
+    Processa comandos, envia data/hora e garante
+    a limpeza do cliente mesmo em caso de exceção.
     """
-    global MAX_CLIENTES # Necessário paraler o limite global
-    
-    while info.ativo:
-        # Processa todos os comandos pendentes na fila compartilhada.
-        try:
-            while True:
-                comando = info.fila_comandos.get_nowait()
-                processar_comando(handle, info, comando)
-        except queue.Empty:
-            pass
-
-        # Envia horário/data ao cliente a cada 60 segundos.
-        agora = time.time()
-        if agora - info.ultimo_envio_hora >= 60:
-            hora_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-            enviar_linha(info.conn, f"[SERVIDOR] Data/Hora: {hora_str}")
-            info.ultimo_envio_hora = agora
-
-        time.sleep(0.2)
-    
-    with clients_lock:
-        clients.pop(handle, None) # Remove o usuário e libera a vaga
-        clientes_ativos = len(clients) # Faz a recontagem
-        
     try:
-        info.conn.close()
-    except OSError:
-        pass
-        
-    print(f"Cliente '{info.nome}' desconectado.")
-    print(f"[VAGA LIBERADA] Ocupação atual do servidor: {clientes_ativos}/{MAX_CLIENTES} cliente(s).")
-   
+        while info.ativo:
+            # Processa os comandos pendentes na fila.
+            try:
+                while True:
+                    comando = info.fila_comandos.get_nowait()
+
+                    # Sinal de falha de comunicação.
+                    if comando is None:
+                        info.ativo = False
+                        break
+
+                    processar_comando(handle, info, comando)
+
+                    if not info.ativo:
+                        break
+
+            except queue.Empty:
+                pass
+
+            if not info.ativo:
+                break
+
+            # Envia data/hora a cada 60 segundos.
+            agora = time.time()
+
+            if agora - info.ultimo_envio_hora >= 60:
+                hora_str = datetime.now().strftime(
+                    "%d/%m/%Y %H:%M:%S"
+                )
+
+                if not enviar_cliente(
+                    info, f"[SERVIDOR] Data/Hora: {hora_str}"
+                ):
+                    info.ativo = False
+                    break
+
+                info.ultimo_envio_hora = agora
+
+            time.sleep(0.2)
+
+    except Exception as e:
+        print(
+            f"[AVISO] Erro ao processar cliente "
+            f"{info.nome}: {type(e).__name__}: {e}"
+        )
+
+    finally:
+        # Rotina compartilhada entre as duas implementações.
+        # Remove o cliente e fecha o socket uma única vez.
+        limpar_cliente(handle, info)
+
 
 
 def atender_cliente(handle, conn, addr):
@@ -292,8 +313,15 @@ def main():
     handle_contador = 0
     try:
         while True:
-            # Aceita uma nova conexão de cliente.
-            conn, addr = servidor.accept()
+            #Blindagem loop principal
+   
+            try:
+                # Aceita uma nova conexão de cliente.
+                conn, addr = servidor.accept()
+            except OSError as e:
+                # Impede que o servidor vá abaixo se houver falha de rede ao aceitar.
+                print(f"[AVISO] Erro temporario ao aceitar conexao: {e}")
+                continue
 
             handle_contador += 1
             handle = handle_contador
