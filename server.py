@@ -46,11 +46,24 @@ class ClienteInfo:
 
 
 def enviar_linha(conn, texto):
-    # Envia uma mensagem em formato de linha para o cliente atual.
+    """Envia uma mensagem ao cliente e informa se houve falha."""
     try:
         conn.sendall((texto + "\n").encode("utf-8"))
-    except OSError:
-        pass
+        return True
+    except (BrokenPipeError, ConnectionResetError,
+            ConnectionAbortedError, TimeoutError, OSError):
+        return False
+
+def enviar_cliente(info, texto):
+    """Envia mensagem e sinaliza falha de comunicação."""
+    if not info.ativo:
+        return False
+
+    if enviar_linha(info.conn, texto):
+        return True
+
+    info.fila_comandos.put(None)
+    return False
 
 
 def broadcast(texto, exceto_handle=None):
@@ -62,7 +75,7 @@ def broadcast(texto, exceto_handle=None):
         # Ignora o remetente caso tenha sido pedido.
         if handle == exceto_handle:
             continue
-        enviar_linha(info.conn, texto)
+        enviar_cliente(info, texto)
 
 
 def thread1_recebe(handle, info):
@@ -77,7 +90,7 @@ def thread1_recebe(handle, info):
                 # Se o cliente fechou a conexão, simula um comando de saída.
                 info.fila_comandos.put(":quit")
                 break
-            buffer += dados.decode("utf-8", errors="ignore")
+            buffer += dados.decode("utf-8", errors="replace")
             # Se chegou ao caractere de quebra de linha, processa a linha completa.
             while "\n" in buffer:
                 linha, buffer = buffer.split("\n", 1)
@@ -85,8 +98,20 @@ def thread1_recebe(handle, info):
                 if linha:
                     # Guarda cada comando ou mensagem na fila para ser processado pela thread 2.
                     info.fila_comandos.put(linha)
-    except OSError:
-        pass
+    except (ConnectionResetError, ConnectionAbortedError,
+            BrokenPipeError, TimeoutError, OSError) as exc:
+        print(
+            f"[CONEXAO] Cliente {info.nome} desconectado "
+            f"durante o recebimento ({type(exc).__name__})."
+        )
+        info.fila_comandos.put(None)
+
+    except Exception as exc:
+        print(
+            f"[ERRO] Falha ao receber dados de {info.nome}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        info.fila_comandos.put(None)
 
 
 def processar_comando(handle, info, texto):
@@ -106,27 +131,54 @@ def processar_comando(handle, info, texto):
             if arg:
                 antigo = info.nome
                 info.nome = arg
-                enviar_linha(info.conn, f"Voce digitou: {texto}")
-                enviar_linha(info.conn, f"[SERVIDOR] Nome alterado de '{antigo}' para '{arg}'")
+                enviar_cliente(info, f"Voce digitou: {texto}")
+                enviar_cliente(info, f"[SERVIDOR] Nome alterado de '{antigo}' para '{arg}'")
             else:
-                # Explica como usar o comando quando ele for invocado sem argumento.
-                enviar_linha(info.conn, "[SERVIDOR] Uso: :nome <novo_nome>")
+                 enviar_cliente(info, "[SERVIDOR] Uso: :nome <novo_nome>")
 
         elif cmd == "quit":
-            # Comando para encerrar a sessão do cliente no servidor.
-            enviar_linha(info.conn, f"Voce digitou: {texto}")
-            enviar_linha(info.conn, "[SERVIDOR] Encerrando conexao...")
+            enviar_cliente(info, f"Voce digitou: {texto}")
+            enviar_cliente(info, "[SERVIDOR] Encerrando conexao...")
             info.ativo = False
 
         else:
-            # Qualquer comando desconhecido é informado ao usuário.
-            enviar_linha(info.conn, f"[SERVIDOR] Comando desconhecido: {texto}")
+            enviar_cliente(info, f"[SERVIDOR] Comando desconhecido: {texto}")
+
     else:
         # Mensagem comum do chat: envia para todos os clientes e ecoa para o remetente.
         hora_str = datetime.now().strftime("%H:%M:%S")
         mensagem_formatada = f"{info.nome} ({hora_str}): {texto}"
         broadcast(mensagem_formatada, exceto_handle=handle)
-        enviar_linha(info.conn, f"Voce digitou: {texto}")
+        enviar_cliente(info, f"Voce digitou: {texto}")
+
+def limpar_cliente(handle, info):
+    """Remove o cliente e fecha a conexão uma única vez."""
+
+    with clients_lock:
+        if info.limpeza_iniciada:
+            return
+
+        info.limpeza_iniciada = True
+        info.ativo = False
+        clients.pop(handle, None)
+        clientes_ativos = len(clients)
+
+    try:
+        info.conn.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+    try:
+        info.conn.close()
+    except OSError:
+        pass
+
+    print(f"Cliente '{info.nome}' desconectado.")
+    print(
+        f"[VAGA LIBERADA] Ocupação atual do servidor: "
+        f"{clientes_ativos}/{MAX_CLIENTES} cliente(s)."
+    )
+
 
 
 def thread2_processa(handle, info):
@@ -181,17 +233,29 @@ def atender_cliente(handle, conn, addr):
         try:
             enviar_linha(conn, "[SERVIDOR] Servidor cheio. Nao ha vagas disponiveis. Tente novamente mais tarde.")
         finally:
-            conn.close()
+            try:
+                conn.close()
+            except OSError:
+                pass
+
         print(f"[SEM VAGA] Conexao recusada: {addr[0]}:{addr[1]}")
         return
 
-    enviar_linha(conn, ": CONECTADO!!")
+    if not enviar_cliente(info, ": CONECTADO!!"):
+        limpar_cliente(handle, info)
+        return
+
     print(f"Novo cliente conectado: {info.nome} (handle={handle})")
 
-    # Mantem duas threads: uma recebe e esta processa os comandos.
-    t1 = threading.Thread(target=thread1_recebe, args=(handle, info), daemon=True)
+    t1 = threading.Thread(
+        target=thread1_recebe,
+        args=(handle, info),
+        daemon=True
+    )
     t1.start()
+
     thread2_processa(handle, info)
+
 
 
 def main():
